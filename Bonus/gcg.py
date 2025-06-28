@@ -75,7 +75,7 @@ def token_gradients(model, input_ids, input_slice, target_slice, loss_slice):
     # TODO: input_ids 是整个输入的 token_id, 但是我们只需要计算 input_slice 的梯度
     # 1. 先定义一个 zero tensor，shape 为 (input_slice_len, vocab_size)
     # vocab_size 是词表大小，思考词表大小对应模型的什么矩阵的哪一维
-    one_hot = torch.zeros(input_slice.stop - input_slice.start, embed_weights.shape[0], requires_grad=True, device=input_ids.device)
+    one_hot = torch.zeros(input_slice.stop - input_slice.start, embed_weights.shape[0], requires_grad=True, device=input_ids.device, dtype=embed_weights.dtype)
 
     # TODO: 2. 将 one_hot 中对应的 token_id 的位置置为 1
     one_hot = one_hot.scatter(1, input_ids[input_slice].unsqueeze(1), 1)
