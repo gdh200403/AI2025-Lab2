@@ -4,12 +4,17 @@ import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from livelossplot import PlotLosses
+import os
 
+# 设置随机种子以确保可重现性
 np.random.seed(20)
 torch.manual_seed(20)
 torch.cuda.manual_seed_all(20)
 
-model_path = "path/to/TinyStories-33M"
+# 创建保存结果的目录
+os.makedirs('./figures', exist_ok=True)
+
+model_path = "roneneldan/TinyStories-33M"
 target = "This is great! I love living on the wild side!"
 num_steps = 500
 adv_string_init = "!" * 200
@@ -18,7 +23,11 @@ batch_size = 512
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 topk = 256
 
-if device == "cuda":
+print(f"使用设备: {device}")
+print(f"目标文本: {target}")
+print(f"初始对抗前缀长度: {len(adv_string_init)}")
+
+if device.type == "cuda":
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.float16,
@@ -66,26 +75,28 @@ def token_gradients(model, input_ids, input_slice, target_slice, loss_slice):
     # TODO: input_ids 是整个输入的 token_id, 但是我们只需要计算 input_slice 的梯度
     # 1. 先定义一个 zero tensor，shape 为 (input_slice_len, vocab_size)
     # vocab_size 是词表大小，思考词表大小对应模型的什么矩阵的哪一维
-    one_hot = 
+    one_hot = torch.zeros(input_slice.stop - input_slice.start, embed_weights.shape[0], requires_grad=True, device=input_ids.device)
 
     # TODO: 2. 将 one_hot 中对应的 token_id 的位置置为 1
-    one_hot = 
+    one_hot = one_hot.scatter(1, input_ids[input_slice].unsqueeze(1), 1)
 
     # TODO: 3. 将 one_hot 乘以 embedding 矩阵，得到 input_slice 的 embedding，注意我们需要梯度
-    input_embeds = 
+    input_embeds = torch.matmul(one_hot, embed_weights)
+    input_embeds.retain_grad()  # 保留梯度以便后续访问
 
     embeds = get_embeddings(model, input_ids.unsqueeze(0)).detach()
 
     # TODO: 4. 用 input_embeds 替换 embedding 的对应部分（可以拼接），拿到 logits 之后和 target 进行 loss 计算
-    full_embeds = 
-    logits = 
-    targets = 
-    loss = 
+    full_embeds = torch.cat([embeds[:, :input_slice.start], input_embeds.unsqueeze(0), embeds[:, input_slice.stop:]], dim=1)
+    logits = model(inputs_embeds=full_embeds).logits
+    targets = input_ids[target_slice]
+    loss = nn.CrossEntropyLoss()(logits[0, loss_slice], targets)
 
     # ==================需要实现的部分结束==================
     loss.backward()
-    grad = one_hot.grad.clone()
-    grad = grad / grad.norm(dim=-1, keepdim=True)
+    grad = input_embeds.grad.clone()
+    # 归一化梯度
+    grad = grad / (grad.norm(dim=-1, keepdim=True) + 1e-8)
     return grad
 
 def sample_control(control_toks, grad, batch_size):
@@ -95,21 +106,22 @@ def sample_control(control_toks, grad, batch_size):
     # ==================需要你实现的部分==================
     control_toks = control_toks.to(grad.device)
     # TODO: 重复 batch_size 次（随机采样的次数） -> (batch_size, len(control_toks))
-    original_control_toks = 
+    original_control_toks = control_toks.unsqueeze(0).repeat(batch_size, 1)
 
     # TODO: 生成 batch_size 个新的 token 位置作为采样的位置，允许复选
-    new_token_pos = 
+    new_token_pos = torch.randint(0, len(control_toks), (batch_size,))
     new_token_pos = new_token_pos.type(torch.int64)
 
     # TODO: 利用梯度的 topk 来获取每个 token 位置上梯度最大的 topk 个 token 的索引
     # https://pytorch.org/docs/stable/generated/torch.topk.html
-    top_indices = 
+    top_indices = torch.topk(grad, topk, dim=-1)[1]
 
     # TODO: 从 top_indices 中的 new_token_pos （作为 index）随机采样一个 topk token 的索引，作为新的 token
-    new_token_val = 
+    new_token_val = top_indices[new_token_pos, torch.randint(0, topk, (batch_size,))]
 
     # TODO: 得到新的 control tokens
-    new_control_toks = 
+    new_control_toks = original_control_toks.clone()
+    new_control_toks[torch.arange(batch_size), new_token_pos] = new_token_val
 
     # ==================需要实现的部分结束==================
     return new_control_toks
@@ -206,13 +218,14 @@ def is_success(prompt):
     # ==================需要你实现的部分==================
     # TODO: 这部分需要你实现判断是否攻击成功的逻辑。用你的 prompt 进行一次推理，
     # 然后判断输出中是否包含 target，如果包含则返回 True，否则返回 False
-    input_ids = 
-    output = 
-    output_text = 
+    input_ids = tokenizer.encode(prompt, add_special_tokens=False, return_tensors='pt').to(device)
+    output = model.generate(input_ids, max_length=input_ids.shape[1] + 50, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+    output_text = tokenizer.decode(output[0], skip_special_tokens=True)
 
     # ==================需要实现的部分结束==================
-    print(output_text)
-    if output_text.lower().find(target.lower()) != -1:
+    # 检查生成的文本是否包含目标文本
+    if target.lower() in output_text.lower():
+        print(f"攻击成功！生成的文本: {output_text}")
         return True
     return False
 
@@ -220,10 +233,15 @@ plotlosses = PlotLosses()
 
 # ==========需要你实现的部分==========
 # TODO: 定义 adv_slice, target_slice, loss_slice
-adv_slice = 
-target_slice = 
-loss_slice = 
+adv_slice = slice(0, len(tokenizer.encode(adv_string_init, add_special_tokens=False)))
+target_slice = slice(adv_slice.stop, adv_slice.stop + len(tokenizer.encode(target, add_special_tokens=False)))
+loss_slice = slice(target_slice.start - 1, target_slice.stop - 1)
 # ==========需要实现的部分结束==========
+
+print(f"开始GCG攻击，目标文本: {target}")
+print(f"对抗前缀切片: {adv_slice}")
+print(f"目标文本切片: {target_slice}")
+print(f"损失计算切片: {loss_slice}")
 
 for i in range(num_steps):
     input_ids = tokenizer.encode(adv_prefix+target, add_special_tokens=False, return_tensors='pt').squeeze(0)
@@ -255,14 +273,26 @@ for i in range(num_steps):
         best_new_adv_prefix = new_adv_prefix[best_new_adv_prefix_id]
         current_loss = losses[best_new_adv_prefix_id]
         adv_prefix = best_new_adv_prefix
+    
     plotlosses.update({'Loss': current_loss.detach().cpu().numpy()})
     plotlosses.send()
-    print(f"Current Prefix:{best_new_adv_prefix}", end='\r')
+    
+    # 每10步打印一次进度
+    if i % 10 == 0:
+        print(f"步骤 {i}/{num_steps}, 当前损失: {current_loss:.4f}, 前缀: {best_new_adv_prefix[:50]}...")
+    
+    print(f"当前前缀: {best_new_adv_prefix}", end='\r')
+    
+    # 检查是否攻击成功
     if is_success(best_new_adv_prefix):
+        print(f"\n在第 {i} 步攻击成功！")
         break
+    
     del coordinate_grad, adv_prefix_tokens
     gc.collect()
     torch.cuda.empty_cache()
 
 if is_success(best_new_adv_prefix):
     print("SUCCESS:", best_new_adv_prefix)
+else:
+    print(f"\n攻击失败，最终前缀: {best_new_adv_prefix}")

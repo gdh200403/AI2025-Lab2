@@ -233,23 +233,41 @@ class SVM:
         异常:
             ValueError: 如果kernel不在支持的类型中或gamma不是正浮点数。
         """
-        # TODO: 初始化SVM模型
         # 1. 验证kernel是否在['linear', 'polynomial', 'gaussian']中，若不在抛出ValueError。
+        if kernel not in ['linear', 'polynomial', 'gaussian']:
+            raise ValueError(f"Unsupported kernel: {kernel}. Supported kernels are 'linear', 'polynomial', 'gaussian'")
+        
         # 2. 将C转换为浮点数，若为None则设为0.0。
+        if C is None:
+            C = 0.0
+        else:
+            C = float(C)
+        
         # 3. 验证gamma是否为正浮点数，若不是抛出ValueError（可尝试转换为float并检查>0）。
+        try:
+            gamma = float(gamma)
+            if gamma <= 0:
+                raise ValueError("gamma must be a positive float")
+        except (TypeError, ValueError):
+            raise ValueError("gamma must be a positive float")
+        
         # 4. 将degree转换为整数，若为None则设为3。
+        if degree is None:
+            degree = 3
+        else:
+            degree = int(degree)
+        
         # 5. 初始化以下实例变量：
-        #    - self.kernel: 核函数类型（str）
-        #    - self.C: 软间隔参数（float）
-        #    - self.gamma: 高斯核参数（float）
-        #    - self.degree: 多项式核阶数（int）
-        #    - self.w: 权重向量（ndarray，仅线性核使用，初始为None）
-        #    - self.b: 偏置项（float，初始为None）
-        #    - self.alphas: 拉格朗日乘子（ndarray，初始为None）
-        #    - self.sv: 支持向量（ndarray，初始为None）
-        #    - self.sv_y: 支持向量标签（ndarray，初始为None）
-        #    - self.fit_type: 模型类型，设为'custom'
-        pass
+        self.kernel = kernel  # 核函数类型（str）
+        self.C = C  # 软间隔参数（float）
+        self.gamma = gamma  # 高斯核参数（float）
+        self.degree = degree  # 多项式核阶数（int）
+        self.w = None  # 权重向量（ndarray，仅线性核使用，初始为None）
+        self.b = None  # 偏置项（float，初始为None）
+        self.alphas = None  # 拉格朗日乘子（ndarray，初始为None）
+        self.sv = None  # 支持向量（ndarray，初始为None）
+        self.sv_y = None  # 支持向量标签（ndarray，初始为None）
+        self.fit_type = 'custom'  # 模型类型，设为'custom'
 
     def _kernel_function(self, x1, x2):
         """
@@ -262,16 +280,19 @@ class SVM:
         返回:
             float: 核函数值。
         """
-        # TODO: 实现核函数计算
         # 1. 根据self.kernel的值选择核函数：
-        #    - 'linear': 计算x1和x2的点积。
-        #    - 'polynomial': 计算多项式核 (x1·x2 + 1)^degree，其中degree为self.degree。
-        #    - 'gaussian': 计算高斯核 exp(-gamma * ||x1 - x2||^2)，其中gamma为self.gamma。
-        # 2. 返回计算得到的核函数值（float）。
-        # 注意：
-        # - 使用NumPy进行向量运算（如np.dot、np.linalg.norm）。
-        # - 确保输入x1, x2是形状相同的向量。
-        pass
+        if self.kernel == 'linear':
+            # 线性核：计算x1和x2的点积
+            return np.dot(x1, x2)
+        elif self.kernel == 'polynomial':
+            # 多项式核：计算多项式核 (x1·x2 + 1)^degree，其中degree为self.degree
+            return (np.dot(x1, x2) + 1) ** self.degree
+        elif self.kernel == 'gaussian':
+            # 高斯核：计算高斯核 exp(-gamma * ||x1 - x2||^2)，其中gamma为self.gamma
+            diff = x1 - x2
+            return np.exp(-self.gamma * np.dot(diff, diff))
+        else:
+            raise ValueError(f"Unsupported kernel: {self.kernel}")
 
     def fit(self, X, y):
         """
@@ -287,38 +308,78 @@ class SVM:
             - 计算偏置项b（对所有支持向量取平均）。
             - 对于线性核，计算权重向量w。
         """
-        # TODO: 实现SVM训练
         # 1. 获取样本数n_samples和特征数n_features。
+        n_samples, n_features = X.shape
+        
         # 2. 计算核矩阵K（n_samples x n_samples），其中K[i,j] = kernel_function(X[i], X[j])。
+        K = np.zeros((n_samples, n_samples))
+        for i in range(n_samples):
+            for j in range(n_samples):
+                K[i, j] = self._kernel_function(X[i], X[j])
+        
         # 3. 设置二次规划参数（使用cvxopt.matrix）：
-        #    - P = y_i * y_j * K[i,j]（外积矩阵）。
-        #    - q = -1向量（n_samples,）。
-        #    - A = y（行向量，形状为(1, n_samples)）。
-        #    - b = 0.0。
-        #    - 如果self.C == 0（硬间隔）：
-        #        - G = -I（单位矩阵的负值）。
-        #        - h = 0向量。
-        #    - 否则（软间隔）：
-        #        - G = 垂直堆叠(-I, I)。
-        #        - h = 水平堆叠(0向量, C向量)。
+        # P = y_i * y_j * K[i,j]（外积矩阵）
+        P = cvxopt.matrix(np.outer(y, y) * K)
+        # q = -1向量（n_samples,）
+        q = cvxopt.matrix(np.ones(n_samples) * -1)
+        # A = y（行向量，形状为(1, n_samples)）
+        A = cvxopt.matrix(y.reshape(1, -1))
+        # b = 0.0
+        b = cvxopt.matrix(0.0)
+        
+        # 如果self.C == 0（硬间隔）：
+        if self.C == 0:
+            # G = -I（单位矩阵的负值）
+            G = cvxopt.matrix(np.diag(np.ones(n_samples) * -1))
+            # h = 0向量
+            h = cvxopt.matrix(np.zeros(n_samples))
+        else:
+            # 否则（软间隔）：
+            # G = 垂直堆叠(-I, I)
+            G = cvxopt.matrix(np.vstack((np.diag(np.ones(n_samples) * -1), np.eye(n_samples))))
+            # h = 水平堆叠(0向量, C向量)
+            h = cvxopt.matrix(np.hstack((np.zeros(n_samples), np.ones(n_samples) * self.C)))
+        
         # 4. 配置cvxopt求解器选项（关闭显示进度，设置高精度：abstol=1e-10, reltol=1e-10, feastol=1e-10）。
+        cvxopt.solvers.options['show_progress'] = False
+        cvxopt.solvers.options['abstol'] = 1e-10
+        cvxopt.solvers.options['reltol'] = 1e-10
+        cvxopt.solvers.options['feastol'] = 1e-10
+        
         # 5. 使用cvxopt.solvers.qp(P, q, G, h, A, b)求解，提取拉格朗日乘子alphas。
+        solution = cvxopt.solvers.qp(P, q, G, h, A, b)
+        alphas = np.ravel(solution['x'])
+        
         # 6. 提取支持向量：
-        #    - 选择alphas > 1e-5的索引。
-        #    - 存储self.alphas（支持向量的拉格朗日乘子）。
-        #    - 存储self.sv（支持向量，X的子集）。
-        #    - 存储self.sv_y（支持向量标签，y的子集）。
+        # 选择alphas > 1e-5的索引
+        sv_indices = alphas > 1e-5
+        # 存储self.alphas（支持向量的拉格朗日乘子）
+        self.alphas = alphas[sv_indices]
+        # 存储self.sv（支持向量，X的子集）
+        self.sv = X[sv_indices]
+        # 存储self.sv_y（支持向量标签，y的子集）
+        self.sv_y = y[sv_indices]
+        
         # 7. 计算偏置项self.b：
-        #    - 对每个支持向量，计算b_i = y_i - sum(alpha_j * y_j * K[i,j])。
-        #    - 取所有b_i的平均值。
+        # 对每个支持向量，计算b_i = y_i - sum(alpha_j * y_j * K[i,j])
+        b_values = []
+        for i in range(len(self.sv)):
+            b_i = self.sv_y[i]
+            for j in range(len(self.sv)):
+                b_i -= self.alphas[j] * self.sv_y[j] * self._kernel_function(self.sv[i], self.sv[j])
+            b_values.append(b_i)
+        # 取所有b_i的平均值
+        self.b = np.mean(b_values)
+        
         # 8. 如果是线性核（self.kernel == 'linear'）：
-        #    - 计算权重self.w = sum(alpha_i * y_i * x_i)。
-        #    - 否则，self.w = None。
-        # 注意：
-        # - 确保矩阵维度正确（如P为n_samples x n_samples，A为1 x n_samples）。
-        # - 使用cvxopt.matrix确保数据类型为'd'（double）。
-        # - 处理数值稳定性（如设置求解器精度）。
-        pass
+        if self.kernel == 'linear':
+            # 计算权重self.w = sum(alpha_i * y_i * x_i)
+            self.w = np.zeros(n_features)
+            for i in range(len(self.alphas)):
+                self.w += self.alphas[i] * self.sv_y[i] * self.sv[i]
+        else:
+            # 否则，self.w = None
+            self.w = None
 
     def project(self, X):
         """
@@ -330,20 +391,26 @@ class SVM:
         返回:
             ndarray: 决策函数值，形状为(n_samples,)。
         """
-        # TODO: 实现决策函数计算
         # 1. 如果self.w不为空（线性核）：
-        #    - 计算f(x) = X·w + b，返回结果（形状为(n_samples,)）。
-        # 2. 否则（非线性核）：
-        #    - 初始化输出数组y_pred（形状为(n_samples,)）。
-        #    - 对每个输入样本X[i]：
-        #        - 计算f(x) = sum(alpha_j * y_j * kernel_function(X[i], sv_j)) + b。
-        #        - 其中sv_j为支持向量（self.sv），alpha_j为self.alphas，y_j为self.sv_y。
-        #    - 存储结果到y_pred[i]。
-        # 3. 返回y_pred。
-        # 注意：
-        # - 使用NumPy进行向量运算以提高效率。
-        # - 确保self.b、self.sv等已正确初始化。
-        pass
+        if self.w is not None:
+            # 计算f(x) = X·w + b，返回结果（形状为(n_samples,)）
+            return np.dot(X, self.w) + self.b
+        else:
+            # 2. 否则（非线性核）：
+            # 初始化输出数组y_pred（形状为(n_samples,)）
+            y_pred = np.zeros(len(X))
+            # 对每个输入样本X[i]：
+            for i in range(len(X)):
+                # 计算f(x) = sum(alpha_j * y_j * kernel_function(X[i], sv_j)) + b
+                # 其中sv_j为支持向量（self.sv），alpha_j为self.alphas，y_j为self.sv_y
+                f_x = 0
+                for j in range(len(self.alphas)):
+                    f_x += self.alphas[j] * self.sv_y[j] * self._kernel_function(X[i], self.sv[j])
+                f_x += self.b
+                # 存储结果到y_pred[i]
+                y_pred[i] = f_x
+            # 3. 返回y_pred
+            return y_pred
 
     def predict(self, X):
         """
@@ -355,14 +422,11 @@ class SVM:
         返回:
             ndarray: 预测标签，形状为(n_samples,)，值为+1或-1。
         """
-        # TODO: 实现类别预测
-        # 1. 调用self.project(X)获取决策函数值。
-        # 2. 对决策函数值应用sign函数，返回+1（正）或-1（负）。
-        # 3. 返回预测标签（形状为(n_samples,)）。
-        # 注意：
-        # - 使用np.sign确保输出为+1或-1。
-        # - 处理决策函数值为0的情况（可归为+1或-1，按需选择）。
-        pass
+        # 1. 调用self.project(X)获取决策函数值
+        decision_values = self.project(X)
+        # 2. 对决策函数值应用sign函数，返回+1（正）或-1（负）
+        # 3. 返回预测标签（形状为(n_samples,)）
+        return np.sign(decision_values)
 
 def formatted_output(model):
     """

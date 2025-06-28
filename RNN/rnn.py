@@ -9,6 +9,8 @@ import tqdm
 from collections import Counter
 import re
 import os
+import json
+from datetime import datetime
 from sklearn.metrics import accuracy_score, f1_score
 from matplotlib.ticker import MaxNLocator
 
@@ -39,13 +41,56 @@ class Config:
     # - LR: 可尝试 [1e-3, 5e-4, 1e-4] 以优化收敛速度和稳定性
     # 报告测试过的超参在测试集上的准确率和F1分数，并讨论权衡
     
-    # BATCH_SIZE = 
-    # EMBEDDING_DIM = 
-    # HIDDEN_DIM = 
-    # N_LAYERS = 
-    # BIDIRECTIONAL = 
-    # DROPOUT_RATE = 
-    # LR = 
+    BATCH_SIZE = 128  # 较小的batch_size适合CPU训练
+    EMBEDDING_DIM = 200  # 中等大小的嵌入维度
+    HIDDEN_DIM = 200  # 中等大小的隐藏维度
+    N_LAYERS = 2  # 2层RNN，平衡深度和过拟合
+    BIDIRECTIONAL = True  # 使用双向RNN提高性能
+    DROPOUT_RATE = 0.5  # 适中的dropout率
+    LR = 5e-4  # 适中的学习率
+
+    def __init__(self):
+        """初始化配置并创建实验目录"""
+        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.experiment_name = f"exp_{self.timestamp}"
+        
+        # 创建实验特定的目录
+        self.experiment_dir = f"./experiments/{self.experiment_name}/"
+        self.model_dir = f"{self.experiment_dir}models/"
+        self.figure_dir = f"{self.experiment_dir}figures/"
+        self.data_dir = f"{self.experiment_dir}data/"
+        self.results_dir = f"{self.experiment_dir}results/"
+        
+        # 创建所有必要的目录
+        for dir_path in [self.experiment_dir, self.model_dir, self.figure_dir, 
+                        self.data_dir, self.results_dir]:
+            os.makedirs(dir_path, exist_ok=True)
+        
+        # 保存实验配置
+        self.save_config()
+    
+    def save_config(self):
+        """保存当前实验配置到JSON文件"""
+        config_dict = {
+            'timestamp': self.timestamp,
+            'experiment_name': self.experiment_name,
+            'hyperparameters': {
+                'BATCH_SIZE': self.BATCH_SIZE,
+                'EMBEDDING_DIM': self.EMBEDDING_DIM,
+                'HIDDEN_DIM': self.HIDDEN_DIM,
+                'N_LAYERS': self.N_LAYERS,
+                'BIDIRECTIONAL': self.BIDIRECTIONAL,
+                'DROPOUT_RATE': self.DROPOUT_RATE,
+                'LR': self.LR,
+                'N_EPOCHS': self.N_EPOCHS,
+                'MAX_LENGTH': self.MAX_LENGTH,
+                'MIN_FREQ': self.MIN_FREQ
+            },
+            'device': str(self.DEVICE)
+        }
+        
+        with open(f"{self.results_dir}config.json", 'w') as f:
+            json.dump(config_dict, f, indent=4)
 
     @staticmethod
     def set_seed():
@@ -68,7 +113,19 @@ class DataProcessor:
         # - 将标记截断到config.MAX_LENGTH以保持一致的序列长度
         # - 比较每种分词器的词汇表大小和模型性能（准确率，F1分数）
         # - 为每个输入文本返回一个标记列表
-        self.tokenizer = None  # 分词器函数 占位符
+        def tokenizer(text):
+            """基本分词器：小写化、去除HTML标签和标点符号，然后分割成单词"""
+            # 移除HTML标签
+            text = re.sub(r'<[^>]+>', '', text)
+            # 小写化
+            text = text.lower()
+            # 去除标点符号，保留字母和数字
+            text = re.sub(r'[^\w\s]', ' ', text)
+            # 分割成单词并过滤空字符串
+            tokens = [token.strip() for token in text.split() if token.strip()]
+            return tokens
+        
+        self.tokenizer = tokenizer
         
         self.vocab = None  
         self.vocab_list = None  
@@ -83,9 +140,9 @@ class DataProcessor:
 
     def load_dataset(self):
         """从Hugging Face加载IMDB数据集"""
-        os.makedirs(self.config.DATA_DIR, exist_ok=True)
+        os.makedirs(self.config.data_dir, exist_ok=True)
         train_data, test_data = datasets.load_dataset(
-            "imdb", split=["train", "test"], cache_dir=self.config.DATA_DIR)
+            "imdb", split=["train", "test"], cache_dir=self.config.data_dir)
         return train_data, test_data
 
     def tokenize_example(self, example):
@@ -96,7 +153,10 @@ class DataProcessor:
         # - 将结果标记截断到self.config.MAX_LENGTH
         # - 返回一个包含"tokens"（标记列表）和"length"（标记数量）的字典
         # - 确保与IMDB数据集的文本格式兼容
-        return {"tokens": [], "length": 0}  
+        tokens = self.tokenizer(example["text"])
+        # 截断到最大长度
+        tokens = tokens[:self.config.MAX_LENGTH]
+        return {"tokens": tokens, "length": len(tokens)}
 
     def build_vocab(self, token_iterator):
         """从已分词的训练数据构建词汇表"""
@@ -189,7 +249,56 @@ class RNNModel(nn.Module):
         # - 对于双向RNN，连接来自两个方向的最终隐藏状态
         # - 使用nn.utils.rnn.pack_padded_sequence和pad_packed_sequence处理可变长度序列
         # - 通过Config超参数实验不同配置，并比较性能（准确率，F1分数）
-        pass  # 占位
+        
+        self.model_type = model_type
+        self.hidden_dim = hidden_dim
+        self.n_layers = n_layers
+        self.bidirectional = bidirectional
+        self.output_dim = output_dim
+        
+        # 嵌入层
+        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=pad_index)
+        
+        # 计算RNN的输入和输出维度
+        rnn_input_dim = embedding_dim
+        rnn_output_dim = hidden_dim * 2 if bidirectional else hidden_dim
+        
+        # 选择RNN类型
+        if model_type == 'RNN':
+            self.rnn = nn.RNN(
+                input_size=rnn_input_dim,
+                hidden_size=hidden_dim,
+                num_layers=n_layers,
+                bidirectional=bidirectional,
+                dropout=dropout_rate if n_layers > 1 else 0,
+                batch_first=True
+            )
+        elif model_type == 'LSTM':
+            self.rnn = nn.LSTM(
+                input_size=rnn_input_dim,
+                hidden_size=hidden_dim,
+                num_layers=n_layers,
+                bidirectional=bidirectional,
+                dropout=dropout_rate if n_layers > 1 else 0,
+                batch_first=True
+            )
+        elif model_type == 'GRU':
+            self.rnn = nn.GRU(
+                input_size=rnn_input_dim,
+                hidden_size=hidden_dim,
+                num_layers=n_layers,
+                bidirectional=bidirectional,
+                dropout=dropout_rate if n_layers > 1 else 0,
+                batch_first=True
+            )
+        else:
+            raise ValueError(f"Unsupported model type: {model_type}")
+        
+        # Dropout层
+        self.dropout = nn.Dropout(dropout_rate)
+        
+        # 全连接输出层
+        self.fc = nn.Linear(rnn_output_dim, output_dim)
 
     def forward(self, ids, length):
         """定义RNN模型的前向传播"""
@@ -204,7 +313,43 @@ class RNNModel(nn.Module):
         # - 对隐藏状态应用dropout
         # - 将隐藏状态传递给全连接层以获得预测
         # - 返回形状为(batch_size, output_dim)的预测张量
-        return torch.zeros(1, self.output_dim)  # 占位
+        
+        # 使用嵌入层嵌入输入ids
+        embedded = self.embedding(ids)
+        
+        # 对嵌入的输入应用dropout
+        embedded = self.dropout(embedded)
+        
+        # 打包嵌入序列以处理可变长度
+        packed_embedded = nn.utils.rnn.pack_padded_sequence(
+            embedded, length.cpu(), batch_first=True, enforce_sorted=False
+        )
+        
+        # 将打包的序列传递给RNN层
+        if self.model_type == 'LSTM':
+            packed_output, (hidden, cell) = self.rnn(packed_embedded)
+        else:
+            packed_output, hidden = self.rnn(packed_embedded)
+        
+        # 解包RNN输出
+        output, output_lengths = nn.utils.rnn.pad_packed_sequence(packed_output, batch_first=True)
+        
+        # 提取最终隐藏状态
+        if self.bidirectional:
+            # 对于双向RNN，连接来自两个方向的最终隐藏状态
+            hidden = torch.cat((hidden[-2, :, :], hidden[-1, :, :]), dim=1)
+        else:
+            # 对于单向RNN，取最后一层的隐藏状态
+            hidden = hidden[-1, :, :]
+        
+        # 对隐藏状态应用dropout
+        hidden = self.dropout(hidden)
+        
+        # 将隐藏状态传递给全连接层以获得预测
+        prediction = self.fc(hidden)
+        
+        # 返回形状为(batch_size, output_dim)的预测张量
+        return prediction
 
 class Trainer:
     """用于训练、评估和使用RNN模型进行预测的类"""
@@ -225,6 +370,17 @@ class Trainer:
         }
         self.criterion = nn.CrossEntropyLoss().to(self.config.DEVICE)
         self.metrics = {name: collections.defaultdict(list) for name in self.models}
+        
+        # 初始化详细结果存储
+        self.detailed_results = {name: {
+            'train_losses': [],
+            'train_accs': [],
+            'valid_losses': [],
+            'valid_accs': [],
+            'test_results': {},
+            'best_epoch': 0,
+            'best_valid_loss': float('inf')
+        } for name in self.models}
 
     def initialize_weights(self, m):
         """初始化线性层、RNN和嵌入层的模型权重"""
@@ -290,7 +446,7 @@ class Trainer:
 
     def train_and_evaluate(self):
         """训练和评估所有模型，根据验证损失保存最佳模型"""
-        os.makedirs(self.config.MODEL_DIR, exist_ok=True)
+        os.makedirs(self.config.model_dir, exist_ok=True)
         for model_name, model in self.models.items():
             model = model.to(self.config.DEVICE)
             model.apply(self.initialize_weights)
@@ -307,14 +463,23 @@ class Trainer:
                 self.metrics[model_name]["valid_accs"].append(valid_acc)
                 if valid_loss < best_valid_loss:
                     best_valid_loss = valid_loss
-                    torch.save(model.state_dict(), f"{self.config.MODEL_DIR}/{model_name}.pt")
+                    torch.save(model.state_dict(), f"{self.config.model_dir}/{model_name}.pt")
+                self.detailed_results[model_name]['train_losses'].append(train_loss)
+                self.detailed_results[model_name]['train_accs'].append(train_acc)
+                self.detailed_results[model_name]['valid_losses'].append(valid_loss)
+                self.detailed_results[model_name]['valid_accs'].append(valid_acc)
+                self.detailed_results[model_name]['best_epoch'] = epoch
+                self.detailed_results[model_name]['best_valid_loss'] = best_valid_loss
                 print(f"Model: {model_name}, Epoch: {epoch}")
                 print(f"train_loss: {train_loss:.3f}, train_acc: {train_acc:.3f}")
                 print(f"valid_loss: {valid_loss:.3f}, valid_acc: {valid_acc:.3f}")
+            
+            # 保存每个模型的详细训练结果
+            self.save_model_results(model_name)
 
     def visualize_metrics(self):
         """可视化训练和验证指标"""
-        os.makedirs(self.config.FIGURE_DIR, exist_ok=True)
+        os.makedirs(self.config.figure_dir, exist_ok=True)
         fig = plt.figure(figsize=(10, 6))
         ax = fig.add_subplot(1, 1, 1)
         for model_name in self.models:
@@ -325,7 +490,7 @@ class Trainer:
         ax.set_xticks(range(self.config.N_EPOCHS))
         ax.legend()
         ax.grid()
-        plt.savefig(f"{self.config.FIGURE_DIR}/train_valid_loss.png")
+        plt.savefig(f"{self.config.figure_dir}/train_valid_loss.png")
         plt.close()
 
         fig = plt.figure(figsize=(10, 6))
@@ -338,20 +503,146 @@ class Trainer:
         ax.set_xticks(range(self.config.N_EPOCHS))
         ax.legend()
         ax.grid()
-        plt.savefig(f"{self.config.FIGURE_DIR}/train_valid_accuracy.png")
+        plt.savefig(f"{self.config.figure_dir}/train_valid_accuracy.png")
         plt.close()
 
     def test(self):
         """在测试集上评估模型"""
         print("\nTesting on the full test set:")
         for model_name, model in self.models.items():
-            model.load_state_dict(torch.load(f"{self.config.MODEL_DIR}/{model_name}.pt"))
+            model.load_state_dict(torch.load(f"{self.config.model_dir}/{model_name}.pt"))
             test_loss, test_acc, predictions, true_labels = self.evaluate(
                 model, self.data_processor.test_loader
             )
             test_f1 = f1_score(true_labels, predictions, average='weighted')
             print(f"Model: {model_name}")
             print(f"Test Loss: {test_loss:.3f}, Test Accuracy: {test_acc:.3f}, Test F1 Score: {test_f1:.3f}")
+            self.detailed_results[model_name]['test_results'] = {
+                'test_loss': test_loss,
+                'test_acc': test_acc,
+                'test_f1': test_f1
+            }
+        
+        # 保存所有测试结果
+        self.save_test_results()
+
+    def save_model_results(self, model_name):
+        """保存单个模型的详细训练结果"""
+        results = self.detailed_results[model_name]
+        results_file = f"{self.config.results_dir}{model_name}_training_results.json"
+        
+        # 添加模型配置信息
+        model_config = {
+            'model_type': model_name,
+            'hyperparameters': {
+                'embedding_dim': self.config.EMBEDDING_DIM,
+                'hidden_dim': self.config.HIDDEN_DIM,
+                'n_layers': self.config.N_LAYERS,
+                'bidirectional': self.config.BIDIRECTIONAL,
+                'dropout_rate': self.config.DROPOUT_RATE,
+                'lr': self.config.LR,
+                'batch_size': self.config.BATCH_SIZE
+            },
+            'training_results': results
+        }
+        
+        with open(results_file, 'w') as f:
+            json.dump(model_config, f, indent=4)
+        
+        # 保存训练曲线数据为CSV格式（便于Excel分析）
+        import pandas as pd
+        df = pd.DataFrame({
+            'epoch': range(len(results['train_losses'])),
+            'train_loss': results['train_losses'],
+            'train_acc': results['train_accs'],
+            'valid_loss': results['valid_losses'],
+            'valid_acc': results['valid_accs']
+        })
+        csv_file = f"{self.config.results_dir}{model_name}_training_curves.csv"
+        df.to_csv(csv_file, index=False)
+        
+        print(f"Saved detailed results for {model_name} to {results_file}")
+        print(f"Saved training curves for {model_name} to {csv_file}")
+
+    def save_test_results(self):
+        """保存所有模型的测试结果比较"""
+        test_results = {}
+        for model_name in self.models:
+            test_results[model_name] = self.detailed_results[model_name]['test_results']
+        
+        # 保存测试结果
+        test_file = f"{self.config.results_dir}test_results_comparison.json"
+        with open(test_file, 'w') as f:
+            json.dump(test_results, f, indent=4)
+        
+        # 创建测试结果比较表格
+        import pandas as pd
+        comparison_data = []
+        for model_name, results in test_results.items():
+            comparison_data.append({
+                'Model': model_name,
+                'Test Loss': f"{results['test_loss']:.4f}",
+                'Test Accuracy': f"{results['test_acc']:.4f}",
+                'Test F1 Score': f"{results['test_f1']:.4f}"
+            })
+        
+        df = pd.DataFrame(comparison_data)
+        csv_file = f"{self.config.results_dir}test_results_comparison.csv"
+        df.to_csv(csv_file, index=False)
+        
+        # 保存最佳模型信息
+        best_model = min(test_results.items(), key=lambda x: x[1]['test_loss'])
+        best_info = {
+            'best_model': best_model[0],
+            'best_test_loss': best_model[1]['test_loss'],
+            'best_test_acc': best_model[1]['test_acc'],
+            'best_test_f1': best_model[1]['test_f1']
+        }
+        
+        best_file = f"{self.config.results_dir}best_model_info.json"
+        with open(best_file, 'w') as f:
+            json.dump(best_info, f, indent=4)
+        
+        print(f"Saved test results comparison to {test_file}")
+        print(f"Saved test results table to {csv_file}")
+        print(f"Saved best model info to {best_file}")
+        print(f"\nBest Model: {best_model[0]}")
+        print(f"Best Test Loss: {best_model[1]['test_loss']:.4f}")
+        print(f"Best Test Accuracy: {best_model[1]['test_acc']:.4f}")
+        print(f"Best Test F1 Score: {best_model[1]['test_f1']:.4f}")
+
+    def save_experiment_summary(self):
+        """保存实验总结报告"""
+        summary = {
+            'experiment_name': self.config.experiment_name,
+            'timestamp': self.config.timestamp,
+            'device': str(self.config.DEVICE),
+            'vocab_size': len(self.data_processor.vocab),
+            'train_samples': len(self.data_processor.train_data),
+            'valid_samples': len(self.data_processor.valid_data),
+            'test_samples': len(self.data_processor.test_data),
+            'model_comparison': {}
+        }
+        
+        for model_name in self.models:
+            model_results = self.detailed_results[model_name]
+            summary['model_comparison'][model_name] = {
+                'best_epoch': model_results['best_epoch'],
+                'best_valid_loss': model_results['best_valid_loss'],
+                'final_train_loss': model_results['train_losses'][-1],
+                'final_train_acc': model_results['train_accs'][-1],
+                'final_valid_loss': model_results['valid_losses'][-1],
+                'final_valid_acc': model_results['valid_accs'][-1],
+                'test_loss': model_results['test_results']['test_loss'],
+                'test_acc': model_results['test_results']['test_acc'],
+                'test_f1': model_results['test_results']['test_f1']
+            }
+        
+        summary_file = f"{self.config.results_dir}experiment_summary.json"
+        with open(summary_file, 'w') as f:
+            json.dump(summary, f, indent=4)
+        
+        print(f"Saved experiment summary to {summary_file}")
 
     def predict_sentiment(self, text, model_name, max_length=256):
         """预测单个文本的情感"""
@@ -397,6 +688,193 @@ def main():
     trainer.visualize_metrics()
     trainer.test()
     trainer.predict_example_texts()
+    
+    # 保存实验总结
+    trainer.save_experiment_summary()
+    
+    print(f"\n实验完成！所有结果已保存到: {config.experiment_dir}")
+    print(f"实验名称: {config.experiment_name}")
+    print(f"时间戳: {config.timestamp}")
+
+def run_hyperparameter_experiments():
+    """运行超参数实验，比较不同配置的性能"""
+    print("开始超参数实验...")
+    
+    # 定义要测试的超参数组合
+    experiments = [
+        {
+            'name': 'baseline',
+            'BATCH_SIZE': 128,
+            'EMBEDDING_DIM': 200,
+            'HIDDEN_DIM': 200,
+            'N_LAYERS': 2,
+            'BIDIRECTIONAL': True,
+            'DROPOUT_RATE': 0.5,
+            'LR': 5e-4
+        },
+        {
+            'name': 'larger_batch',
+            'BATCH_SIZE': 256,
+            'EMBEDDING_DIM': 200,
+            'HIDDEN_DIM': 200,
+            'N_LAYERS': 2,
+            'BIDIRECTIONAL': True,
+            'DROPOUT_RATE': 0.5,
+            'LR': 5e-4
+        },
+        {
+            'name': 'larger_embedding',
+            'BATCH_SIZE': 128,
+            'EMBEDDING_DIM': 300,
+            'HIDDEN_DIM': 200,
+            'N_LAYERS': 2,
+            'BIDIRECTIONAL': True,
+            'DROPOUT_RATE': 0.5,
+            'LR': 5e-4
+        },
+        {
+            'name': 'larger_hidden',
+            'BATCH_SIZE': 128,
+            'EMBEDDING_DIM': 200,
+            'HIDDEN_DIM': 300,
+            'N_LAYERS': 2,
+            'BIDIRECTIONAL': True,
+            'DROPOUT_RATE': 0.5,
+            'LR': 5e-4
+        },
+        {
+            'name': 'deeper_network',
+            'BATCH_SIZE': 128,
+            'EMBEDDING_DIM': 200,
+            'HIDDEN_DIM': 200,
+            'N_LAYERS': 3,
+            'BIDIRECTIONAL': True,
+            'DROPOUT_RATE': 0.5,
+            'LR': 5e-4
+        },
+        {
+            'name': 'unidirectional',
+            'BATCH_SIZE': 128,
+            'EMBEDDING_DIM': 200,
+            'HIDDEN_DIM': 200,
+            'N_LAYERS': 2,
+            'BIDIRECTIONAL': False,
+            'DROPOUT_RATE': 0.5,
+            'LR': 5e-4
+        },
+        {
+            'name': 'higher_dropout',
+            'BATCH_SIZE': 128,
+            'EMBEDDING_DIM': 200,
+            'HIDDEN_DIM': 200,
+            'N_LAYERS': 2,
+            'BIDIRECTIONAL': True,
+            'DROPOUT_RATE': 0.7,
+            'LR': 5e-4
+        },
+        {
+            'name': 'lower_lr',
+            'BATCH_SIZE': 128,
+            'EMBEDDING_DIM': 200,
+            'HIDDEN_DIM': 200,
+            'N_LAYERS': 2,
+            'BIDIRECTIONAL': True,
+            'DROPOUT_RATE': 0.5,
+            'LR': 1e-4
+        }
+    ]
+    
+    all_results = []
+    
+    for i, exp_config in enumerate(experiments):
+        print(f"\n{'='*60}")
+        print(f"实验 {i+1}/{len(experiments)}: {exp_config['name']}")
+        print(f"{'='*60}")
+        
+        # 创建新的配置
+        config = Config()
+        config.set_seed()
+        
+        # 更新超参数
+        for key, value in exp_config.items():
+            if key != 'name':
+                setattr(config, key, value)
+        
+        # 重新保存配置
+        config.save_config()
+        
+        # 运行实验
+        data_processor = DataProcessor(config)
+        data_processor.process()
+        
+        trainer = Trainer(config, data_processor)
+        trainer.train_and_evaluate()
+        trainer.visualize_metrics()
+        trainer.test()
+        trainer.save_experiment_summary()
+        
+        # 收集结果
+        best_model = None
+        best_f1 = 0
+        for model_name, results in trainer.detailed_results.items():
+            if results['test_results']['test_f1'] > best_f1:
+                best_f1 = results['test_results']['test_f1']
+                best_model = model_name
+        
+        exp_result = {
+            'experiment_name': exp_config['name'],
+            'config': exp_config,
+            'best_model': best_model,
+            'best_f1': best_f1,
+            'all_results': trainer.detailed_results
+        }
+        all_results.append(exp_result)
+        
+        print(f"实验 {exp_config['name']} 完成，最佳模型: {best_model}, F1: {best_f1:.4f}")
+    
+    # 保存所有实验结果比较
+    comparison_file = f"./experiments/hyperparameter_comparison_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    os.makedirs(os.path.dirname(comparison_file), exist_ok=True)
+    
+    with open(comparison_file, 'w') as f:
+        json.dump(all_results, f, indent=4)
+    
+    # 创建比较表格
+    import pandas as pd
+    comparison_data = []
+    for result in all_results:
+        comparison_data.append({
+            'Experiment': result['experiment_name'],
+            'Batch Size': result['config']['BATCH_SIZE'],
+            'Embedding Dim': result['config']['EMBEDDING_DIM'],
+            'Hidden Dim': result['config']['HIDDEN_DIM'],
+            'Layers': result['config']['N_LAYERS'],
+            'Bidirectional': result['config']['BIDIRECTIONAL'],
+            'Dropout': result['config']['DROPOUT_RATE'],
+            'Learning Rate': result['config']['LR'],
+            'Best Model': result['best_model'],
+            'Best F1 Score': f"{result['best_f1']:.4f}"
+        })
+    
+    df = pd.DataFrame(comparison_data)
+    csv_file = f"./experiments/hyperparameter_comparison_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    df.to_csv(csv_file, index=False)
+    
+    print(f"\n{'='*60}")
+    print("所有超参数实验完成！")
+    print(f"详细结果保存到: {comparison_file}")
+    print(f"比较表格保存到: {csv_file}")
+    print(f"{'='*60}")
+    
+    # 找出最佳配置
+    best_exp = max(all_results, key=lambda x: x['best_f1'])
+    print(f"\n最佳配置: {best_exp['experiment_name']}")
+    print(f"最佳F1分数: {best_exp['best_f1']:.4f}")
+    print(f"最佳模型: {best_exp['best_model']}")
 
 if __name__ == "__main__":
-    main()
+    # 运行单个实验
+    # main()
+    
+    # 运行超参数实验
+    run_hyperparameter_experiments()

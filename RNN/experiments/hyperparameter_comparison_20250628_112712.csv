@@ -1,0 +1,9 @@
+Experiment,Batch Size,Embedding Dim,Hidden Dim,Layers,Bidirectional,Dropout,Learning Rate,Best Model,Best F1 Score
+baseline,128,200,200,2,True,0.5,0.0005,GRU,0.8623
+larger_batch,256,200,200,2,True,0.5,0.0005,LSTM,0.8601
+larger_embedding,128,300,200,2,True,0.5,0.0005,LSTM,0.8515
+larger_hidden,128,200,300,2,True,0.5,0.0005,GRU,0.8599
+deeper_network,128,200,200,3,True,0.5,0.0005,GRU,0.8600
+unidirectional,128,200,200,2,False,0.5,0.0005,LSTM,0.8571
+higher_dropout,128,200,200,2,True,0.7,0.0005,GRU,0.8674
+lower_lr,128,200,200,2,True,0.5,0.0001,LSTM,0.8641

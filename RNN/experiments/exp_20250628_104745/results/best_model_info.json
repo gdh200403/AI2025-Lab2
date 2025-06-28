@@ -1,0 +1,6 @@
+{
+    "best_model": "LSTM",
+    "best_test_loss": 0.32402416455502414,
+    "best_test_acc": 0.8599011481416469,
+    "best_test_f1": 0.8597595655912303
+}

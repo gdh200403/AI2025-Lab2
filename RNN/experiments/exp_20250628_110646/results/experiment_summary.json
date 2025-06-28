@@ -1,0 +1,44 @@
+{
+    "experiment_name": "exp_20250628_110646",
+    "timestamp": "20250628_110646",
+    "device": "cuda",
+    "vocab_size": 25036,
+    "train_samples": 18750,
+    "valid_samples": 6250,
+    "test_samples": 25000,
+    "model_comparison": {
+        "RNN": {
+            "best_epoch": 9,
+            "best_valid_loss": 0.4475644145693098,
+            "final_train_loss": 0.40315738046655847,
+            "final_train_acc": 0.8181746488525754,
+            "final_valid_loss": 0.5890864942755017,
+            "final_valid_acc": 0.728671303817204,
+            "test_loss": 0.48641614403043476,
+            "test_acc": 0.7872448980200047,
+            "test_f1": 0.787639996942016
+        },
+        "LSTM": {
+            "best_epoch": 9,
+            "best_valid_loss": 0.30547306428150256,
+            "final_train_loss": 0.07668663624699423,
+            "final_train_acc": 0.9722576530612245,
+            "final_valid_loss": 0.42170686259561657,
+            "final_valid_acc": 0.8630240425771597,
+            "test_loss": 0.35668855882724937,
+            "test_acc": 0.8470822703473422,
+            "test_f1": 0.8464203048997067
+        },
+        "GRU": {
+            "best_epoch": 9,
+            "best_valid_loss": 0.2911377637361994,
+            "final_train_loss": 0.05170994886469577,
+            "final_train_acc": 0.9812393707482994,
+            "final_valid_loss": 0.5412260257467931,
+            "final_valid_acc": 0.8774397142079412,
+            "test_loss": 0.3258518207894296,
+            "test_acc": 0.8600526147959183,
+            "test_f1": 0.8599946874144109
+        }
+    }
+}

@@ -1,0 +1,6 @@
+{
+    "best_model": "GRU",
+    "best_test_loss": 0.3258518207894296,
+    "best_test_acc": 0.8600526147959183,
+    "best_test_f1": 0.8599946874144109
+}

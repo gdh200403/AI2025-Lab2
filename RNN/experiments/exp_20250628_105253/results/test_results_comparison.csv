@@ -1,0 +1,4 @@
+Model,Test Loss,Test Accuracy,Test F1 Score
+RNN,0.4441,0.8472,0.8468
+LSTM,0.3280,0.8604,0.8601
+GRU,0.3436,0.8588,0.8588
